@@ -10,12 +10,14 @@ from unittest.mock import patch
 
 from midearms import (
     ADAPTERS,
+    call_llm,
     connect,
     dream,
     dream_notes,
     llm_dream,
     parse_model_notes,
     render_export,
+    verify_notes,
 )
 
 FIXTURES = Path(__file__).parent / 'fixtures'
@@ -90,6 +92,23 @@ class CoreTests(unittest.TestCase):
         )
         self.assertEqual(dream([task, task]), [])
 
+    def test_recurring_assistant_narration_is_not_a_pattern(self):
+        line = '工作区目前是空的。我先克隆仓库来看代码。'
+        self.assertEqual(
+            dream_notes([
+                {'message_id': 'm1', 'content': line, 'roles': {'assistant'}, 'sources': {'a'}},
+                {'message_id': 'm2', 'content': line, 'roles': {'assistant'}, 'sources': {'b'}},
+            ]),
+            [],
+        )
+        self.assertEqual(
+            [note['content'] for note in dream_notes([
+                {'message_id': 'm1', 'content': 'Never commit credentials.', 'roles': {'assistant'}, 'sources': {'a'}},
+                {'message_id': 'm2', 'content': 'Never commit credentials.', 'roles': {'assistant'}, 'sources': {'b'}},
+            ])],
+            ['Pattern: Never commit credentials.'],
+        )
+
     def test_confidence_and_provenance(self):
         notes = dream_notes([
             {'message_id': 'm1', 'content': 'Prefer small commits.', 'sources': {'a'}},
@@ -163,16 +182,18 @@ class CoreTests(unittest.TestCase):
             db.close()
 
             db = connect(path)
-            self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 2)
-            self.assertEqual(
-                tuple(db.execute('SELECT kind, confidence FROM notes').fetchone()),
-                ('Pattern', 'observed'),
-            )
-            self.assertEqual(
-                tuple(db.execute('SELECT adapter, source FROM occurrences').fetchone()),
-                ('legacy', 'legacy'),
-            )
-            db.close()
+            try:
+                self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 3)
+                self.assertEqual(
+                    tuple(db.execute('SELECT kind, confidence FROM notes').fetchone()),
+                    ('Pattern', 'observed'),
+                )
+                self.assertEqual(
+                    tuple(db.execute('SELECT adapter, source FROM occurrences').fetchone()),
+                    ('legacy', 'legacy'),
+                )
+            finally:
+                db.close()
 
     def test_explicit_correction_cli(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -295,8 +316,8 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(len(notes), 1)
             self.assertEqual(notes[0]['pinned'], 1)
             self.assertEqual(notes[0]['confidence'], 'confirmed')
-            self.assertEqual(notes[0]['sources'], 1)
-            self.assertEqual(len(notes[0]['message_ids']), 1)
+            self.assertEqual(notes[0]['sources'], 0)
+            self.assertEqual(len(notes[0]['message_ids']), 0)
             target = root / 'AGENTS.md'
             self.assertEqual(self.run_cli(store, 'export', target).returncode, 0)
             text = target.read_text(encoding='utf-8')
@@ -376,6 +397,177 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(notes[0]['content'], 'Rule: Prefer explicit configuration.')
         self.assertEqual(notes[0]['confidence'], 'corroborated')
         self.assertGreater(notes[0]['sources'], 1)
+
+    def test_incremental_dream_and_projects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = root / 'memory.db'
+            first = root / 'first.jsonl'
+            second = root / 'second.jsonl'
+            first.write_text(
+                '{"role":"user","content":"Prefer small commits."}\n',
+                encoding='utf-8',
+            )
+            second.write_text(
+                '{"role":"user","content":"Always run tests."}\n',
+                encoding='utf-8',
+            )
+            self.assertEqual(
+                self.run_cli(store, 'ingest', 'jsonl', first, '--project', 'alpha').returncode,
+                0,
+            )
+            result = self.run_cli(store, 'dream', '--project', 'alpha')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)[0]['new_messages'], 1)
+
+            self.assertEqual(
+                self.run_cli(store, 'ingest', 'jsonl', second, '--project', 'alpha').returncode,
+                0,
+            )
+            result = self.run_cli(store, 'dream', '--project', 'alpha')
+            self.assertEqual(json.loads(result.stdout)[0]['new_messages'], 1)
+            notes = json.loads(self.run_cli(store, 'query', '--project', 'alpha', '--details').stdout)
+            self.assertEqual(len(notes), 2)
+            self.assertTrue(all(note['project'] == 'alpha' for note in notes))
+
+            third = root / 'third.jsonl'
+            third.write_text(
+                '{"role":"user","content":"Never hide errors."}\n',
+                encoding='utf-8',
+            )
+            self.assertEqual(
+                self.run_cli(store, 'ingest', 'jsonl', third, '--project', 'beta').returncode,
+                0,
+            )
+            self.assertEqual(self.run_cli(store, 'dream', '--project', 'beta').returncode, 0)
+            alpha = json.loads(self.run_cli(store, 'query', '--project', 'alpha').stdout)
+            beta = json.loads(self.run_cli(store, 'query', '--project', 'beta').stdout)
+            self.assertTrue(all('hide errors' not in note for note in alpha))
+            self.assertTrue(any('hide errors' in note for note in beta))
+
+    def test_note_cap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = root / 'memory.db'
+            source = root / 'many.jsonl'
+            source.write_text(
+                '\n'.join(
+                    json.dumps({'role': 'user', 'content': f'Prefer rule {index}.'})
+                    for index in range(5)
+                ) + '\n',
+                encoding='utf-8',
+            )
+            self.assertEqual(
+                self.run_cli(store, 'ingest', 'jsonl', source, '--project', 'alpha').returncode,
+                0,
+            )
+            result = self.run_cli(store, 'dream', '--project', 'alpha', '--max-notes', '2')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)[0]['kept'], 2)
+            notes = json.loads(self.run_cli(store, 'query', '--project', 'alpha').stdout)
+            self.assertEqual(len(notes), 2)
+
+    def test_wiki(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = root / 'memory.db'
+            source = root / 'one.jsonl'
+            source.write_text(
+                '{"role":"user","content":"Correction: Never hide errors."}\n',
+                encoding='utf-8',
+            )
+            self.assertEqual(
+                self.run_cli(store, 'ingest', 'jsonl', source, '--project', 'alpha').returncode,
+                0,
+            )
+            self.assertEqual(self.run_cli(store, 'dream', '--project', 'alpha').returncode, 0)
+            wiki = root / 'wiki'
+            result = self.run_cli(store, 'wiki', wiki, '--project', 'alpha')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((wiki / 'MEMORY.md').exists())
+            self.assertTrue((wiki / 'projects' / 'alpha.md').exists())
+            note_pages = list((wiki / 'notes').glob('*.md'))
+            self.assertEqual(len(note_pages), 1)
+            index = (wiki / 'MEMORY.md').read_text(encoding='utf-8')
+            self.assertIn('projects/alpha.md', index)
+            self.assertIn('notes/', index)
+
+    def test_verify_notes(self):
+        notes = [{'text': 'Prefer explicit configuration.', 'kind': 'Lesson', 'confidence': 'unverified'}]
+        records = [{'content': 'Prefer explicit configuration.'}]
+        with patch('midearms.call_llm', return_value='[{"index":0,"supported":true}]'):
+            self.assertEqual(
+                verify_notes(notes, records, {'verify': True})[0]['text'],
+                'Prefer explicit configuration.',
+            )
+        with patch('midearms.call_llm', return_value='[{"index":0,"supported":false}]'):
+            self.assertEqual(verify_notes(notes, records, {'verify': True}), [])
+
+    def test_llm_cache(self):
+        body = json.dumps({
+            'choices': [{'message': {'content': 'cached response'}}]
+        }).encode('utf-8')
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return body
+
+        db = connect(':memory:')
+        try:
+            config = {
+                'provider': 'openai',
+                'endpoint': 'http://localhost:9999/v1',
+                'model': 'test',
+            }
+            with patch('midearms.urllib.request.urlopen', return_value=FakeResponse()) as mocked:
+                self.assertEqual(call_llm('same prompt', config, db), 'cached response')
+                self.assertEqual(call_llm('same prompt', config, db), 'cached response')
+                self.assertEqual(mocked.call_count, 1)
+        finally:
+            db.close()
+
+    def test_access_stats_and_maintain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = root / 'memory.db'
+            source = root / 'one.jsonl'
+            source.write_text(
+                '{"role":"user","content":"Always run tests."}\n',
+                encoding='utf-8',
+            )
+            self.assertEqual(
+                self.run_cli(store, 'ingest', 'jsonl', source, '--project', 'alpha').returncode,
+                0,
+            )
+            self.assertEqual(self.run_cli(store, 'dream', '--project', 'alpha').returncode, 0)
+            self.assertEqual(self.run_cli(store, 'query', '--project', 'alpha').returncode, 0)
+            stats = json.loads(self.run_cli(store, 'stats', '--project', 'alpha').stdout)
+            self.assertEqual(stats['notes'], 1)
+            self.assertEqual(stats['top_accessed'][0]['access_count'], 1)
+
+            db = sqlite3.connect(store)
+            db.execute(
+                "UPDATE notes SET last_accessed = '2000-01-01T00:00:00+00:00', access_count = 0"
+            )
+            db.commit()
+            db.close()
+            result = self.run_cli(
+                store, 'maintain', '--project', 'alpha', '--stale-days', '1', '--archive'
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)['archived'], 1)
+            visible = json.loads(self.run_cli(store, 'query', '--project', 'alpha').stdout)
+            self.assertEqual(visible, [])
+            archived = json.loads(
+                self.run_cli(store, 'query', '--project', 'alpha', '--include-archived').stdout
+            )
+            self.assertEqual(len(archived), 1)
 
 
 if __name__ == '__main__':
