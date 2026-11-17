@@ -83,6 +83,13 @@ class CoreTests(unittest.TestCase):
             ['Lesson: Always run tests.', 'Lesson: Prefer small commits.'],
         )
 
+    def test_long_recurring_task_request_is_not_a_pattern(self):
+        task = (
+            '你可以先对其进行一定程度上的优化。阅读一下Anthropic最新的关于Dreaming的文章，'
+            '了解一下他们的实践，并且对该系统进行优化'
+        )
+        self.assertEqual(dream([task, task]), [])
+
     def test_confidence_and_provenance(self):
         notes = dream_notes([
             {'message_id': 'm1', 'content': 'Prefer small commits.', 'sources': {'a'}},

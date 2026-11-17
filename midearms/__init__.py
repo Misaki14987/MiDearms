@@ -407,6 +407,8 @@ def dream_notes(items, focus=None):
             continue
         if noisy_outline(content) and not entry['explicit']:
             continue
+        if recurring and not (entry['explicit'] or strong or cue) and len(content) > 60:
+            continue
         if not entry['explicit'] and not recurring:
             if 'user' in entry['roles']:
                 limit = 240
