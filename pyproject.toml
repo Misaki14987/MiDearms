@@ -3,8 +3,8 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 [project]
 name = "MiDearms"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.10"
-description = "Local-first shared agent memory"
+description = "Local-first shared agent memory with provenance-aware dreaming"
 [project.scripts]
 midearms = "midearms:main"
