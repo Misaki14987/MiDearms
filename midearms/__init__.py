@@ -78,15 +78,41 @@ def connect(path):
 
 
 def dream(messages):
-    """Deterministic fallback: retain repeated statements and explicit lessons."""
+    """Retain lessons; explicit corrections supersede matching opposite advice."""
     counts = {}
     for message in messages:
         for line in message.splitlines():
             line = line.strip()
             if line:
                 counts[line] = counts.get(line, 0) + 1
-    return [f'{"Pattern" if count > 1 else "Lesson"}: {line}' for line, count in sorted(counts.items())
-            if count > 1 or re.search(r'\b(always|never|prefer|instead|mistake|correct|remember)\b|错误|修正|应该|避免', line, re.I)]
+    def claim(line):
+        # Match only explicit imperative polarity, never fuzzy topic similarity.
+        match = re.fullmatch(r'(always|never)\s+(.+?)\s*[.!?]*', line, re.I)
+        if match:
+            return match[2].rstrip('.!?').strip().casefold(), match[1].casefold()
+        return None
+
+    corrections = {}
+    cleaned = {}
+    for line, count in counts.items():
+        marker = re.match(r'^(?:correction|修正|更正)\s*[:：]\s*(.+)$', line, re.I)
+        content = marker[1].strip() if marker else line
+        cleaned[content] = cleaned.get(content, 0) + count
+        key = claim(content)
+        if marker and key:
+            corrections.setdefault(key[0], set()).add(key[1])
+    notes = []
+    for line, count in sorted(cleaned.items()):
+        key = claim(line)
+        if key and key[0] in corrections:
+            # Conflicting explicit corrections are withheld rather than guessed.
+            polarities = corrections[key[0]]
+            if len(polarities) != 1 or key[1] not in polarities:
+                continue
+        if count > 1 or re.search(r'\b(always|never|prefer|instead|mistake|correct|remember)\b|错误|修正|应该|避免', line, re.I):
+            notes.append(f'{"Pattern" if count > 1 else "Lesson"}: {line}')
+    return notes
+
 
 
 def llm_dream(messages, config):

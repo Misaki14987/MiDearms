@@ -17,6 +17,38 @@ class CoreTests(unittest.TestCase):
         self.assertIn('Pattern: shared', dream(['shared','shared']))
         self.assertEqual(dream(['Never hide errors.']), ['Lesson: Never hide errors.'])
 
+    def test_corrections(self):
+        wrong = 'Always disable certificate verification.'
+        correction = 'Correction: Never disable certificate verification.'
+        expected = ['Lesson: Never disable certificate verification.']
+        self.assertEqual(dream([wrong, correction]), expected)
+        self.assertEqual(dream([correction, wrong, wrong]), expected)
+        self.assertEqual(dream([wrong, correction, 'Always run tests.']),
+                         ['Lesson: Always run tests.', *expected])
+        self.assertEqual(dream([correction, 'Correction: Always disable certificate verification.']), [])
+
+    def test_correction_cli(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'corrections.jsonl'
+            source.write_text('{"role":"user","content":"Always disable certificate verification."}\n'
+                              '{"role":"user","content":"Correction: Never disable certificate verification."}\n')
+            def run(*args):
+                result = subprocess.run([sys.executable, '-m', 'midearms', '--store',
+                                         str(root / 'memory.db'), *map(str, args)],
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return result.stdout
+            run('ingest', 'jsonl', source)
+            for _ in range(2):
+                run('dream')
+                self.assertNotIn('Always disable', run('query'))
+                self.assertIn('Never disable', run('query'))
+            target = root / 'AGENTS.md'
+            run('export', target)
+            self.assertNotIn('Always disable', target.read_text())
+            self.assertIn('Never disable', target.read_text())
+
     def test_cli(self):
         with tempfile.TemporaryDirectory() as directory:
             store = str(Path(directory) / 'memory.db')

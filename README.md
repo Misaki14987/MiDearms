@@ -37,7 +37,7 @@ SQLite contains `messages(id, content)` and `notes(id, content)` tables. Back up
 
 ## Offline dreaming and BYO LLM
 
-Default dreaming uses deterministic rules: retain recurring lines and explicit correction/preference cues, producing labeled Pattern/Lesson notes. It does not infer semantic contradictions or resolve conflicting claims. Exact duplicate messages are deduplicated before dreaming, so recurrence must occur across distinct messages. This conservative fallback works without keys, dependencies, or a network.
+Default dreaming uses deterministic rules: retain recurring lines and explicit correction/preference cues, producing labeled Pattern/Lesson notes. Explicit `Correction:` (also `修正：` / `更正：`) statements supersede opposite `Always` / `Never` advice about the same normalized action, independently of ingest/hash order. Conflicting explicit corrections for that action are withheld. Matching ignores case and terminal punctuation; unrelated actions remain intact. Broader paraphrases and implicit contradictions are not inferred. Exact duplicate messages are deduplicated before dreaming, so recurrence must occur across distinct messages. This conservative fallback works without keys, dependencies, or a network.
 
 For semantic extraction, explicitly pass `dream --llm-config model.json`:
 
