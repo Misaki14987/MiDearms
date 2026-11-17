@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 import tempfile
@@ -26,6 +27,32 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(dream([wrong, correction, 'Always run tests.']),
                          ['Lesson: Always run tests.', *expected])
         self.assertEqual(dream([correction, 'Correction: Always disable certificate verification.']), [])
+
+    def test_explicit_corrections_without_keywords(self):
+        for marker in ('Correction:', '修正：', '更正：'):
+            with self.subTest(marker=marker):
+                self.assertEqual(dream([marker + '使用参数化查询。']),
+                                 ['Lesson: 使用参数化查询。'])
+
+    def test_explicit_correction_cli(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'correction.jsonl'
+            source.write_text(json.dumps({'role': 'user', 'content': '修正：使用参数化查询。'}))
+            def run(*args):
+                result = subprocess.run([sys.executable, '-m', 'midearms', '--store',
+                                         str(root / 'memory.db'), *map(str, args)],
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return result.stdout
+            run('ingest', 'jsonl', source)
+            for _ in range(2):
+                run('dream')
+                self.assertEqual(json.loads(run('query', '参数化')),
+                                 ['Lesson: 使用参数化查询。'])
+            target = root / 'AGENTS.md'
+            run('export', target)
+            self.assertIn('- Lesson: 使用参数化查询。', target.read_text())
 
     def test_correction_cli(self):
         with tempfile.TemporaryDirectory() as directory:

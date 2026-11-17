@@ -94,10 +94,13 @@ def dream(messages):
 
     corrections = {}
     cleaned = {}
+    explicit_corrections = set()
     for line, count in counts.items():
         marker = re.match(r'^(?:correction|修正|更正)\s*[:：]\s*(.+)$', line, re.I)
         content = marker[1].strip() if marker else line
         cleaned[content] = cleaned.get(content, 0) + count
+        if marker:
+            explicit_corrections.add(content)
         key = claim(content)
         if marker and key:
             corrections.setdefault(key[0], set()).add(key[1])
@@ -109,7 +112,7 @@ def dream(messages):
             polarities = corrections[key[0]]
             if len(polarities) != 1 or key[1] not in polarities:
                 continue
-        if count > 1 or re.search(r'\b(always|never|prefer|instead|mistake|correct|remember)\b|错误|修正|应该|避免', line, re.I):
+        if line in explicit_corrections or count > 1 or re.search(r'\b(always|never|prefer|instead|mistake|correct|remember)\b|错误|修正|应该|避免', line, re.I):
             notes.append(f'{"Pattern" if count > 1 else "Lesson"}: {line}')
     return notes
 
